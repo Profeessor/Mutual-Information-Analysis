@@ -1,0 +1,5 @@
+Condition,Mean Test R2,Std Test R2,Mean Test MAE,Std Test MAE,Mean Test RMSE,Std Test RMSE,Imp_alpha_s1,ImpStd_alpha_s1,Imp_a_mean_s1,ImpStd_a_mean_s1,Imp_a_mean_s2,ImpStd_a_mean_s2,Imp_ndt_mean_s1,ImpStd_ndt_mean_s1,Imp_ndt_mean_s2,ImpStd_ndt_mean_s2
+All_Controls,0.6509,0.0688,0.1140,0.0061,0.1564,0.0138,0.5592,0.0270,0.2588,0.0096,0.6558,0.0433,0.1141,0.0069,0.3933,0.0181
+Threshold_Only,0.5201,0.0782,0.1319,0.0050,0.1839,0.0119,0.6519,0.0268,0.3149,0.0162,0.8390,0.0605,,,,
+NDT_Only,0.5441,0.0785,0.1354,0.0061,0.1791,0.0134,0.6734,0.0381,,,,,0.1706,0.0103,0.5096,0.0203
+Alpha_Only,0.3719,0.0522,0.1562,0.0053,0.2110,0.0073,0.8241,0.0534,,,,,,,,

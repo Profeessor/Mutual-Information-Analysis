@@ -86,15 +86,20 @@ ipython_config.py
 .Spotlight-V100
 .Trashes
 
-# Generated output (adjust patterns as needed)
-*.csv
-*.png
-*.jpeg
-*.jpg
-*.gif
-plots_*/
-results_*/
-mi_results/
-FiguresMI/
-Model*/*/
-LevyPlot/ 
+# REMOVED THE GENERIC OUTPUT RULES BELOW
+# # Generated output (adjust patterns as needed)
+# *.csv
+# *.png
+# *.jpeg
+# *.jpg
+# *.gif
+# plots_*/
+# results_*/
+# mi_results/
+# FiguresMI/
+# Model*/*/
+# LevyPlot/ 
+
+# Ignore Model1 and Model2 directories/files for now
+Model1*/
+Model2*/ 
