@@ -8,14 +8,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, List, Dict, Optional, Union
 import warnings
+from scipy.integrate import dblquad
 
 class MutualInformationAnalyzer:
     """
-    A comprehensive mutual information analyzer implementing multiple estimation methods
-    suitable for small datasets, specifically designed for alpha parameter analysis.
+    Mutual Information analyzer using kernel density estimation with optimal bandwidth.
     """
     
-    def __init__(self, data: pd.DataFrame):
+    def __init__(self, data):
         """
         Initialize the analyzer with data.
         
@@ -27,109 +27,17 @@ class MutualInformationAnalyzer:
         self.data = data
         self.n_samples = len(data)
         
-    def gaussian_mi(self, x: np.ndarray, y: np.ndarray) -> Tuple[float, float]:
-        """
-        Estimate mutual information assuming Gaussian distribution.
-        Suitable for small samples when normality assumption is reasonable.
-        
-        Parameters:
-        -----------
-        x : np.ndarray
-            First variable (e.g., alpha_s1)
-        y : np.ndarray
-            Second variable (e.g., alpha_s2)
-            
-        Returns:
-        --------
-        mi : float
-            Estimated mutual information (in bits)
-        p_value : float
-            P-value from permutation test
-        """
-        # Calculate correlation coefficient
-        r = np.corrcoef(x, y)[0, 1]
-        
-        # Calculate MI assuming Gaussian distribution (in bits)
-        mi = -0.5 * np.log2(1 - r**2)
-        
-        # Permutation test
-        n_permutations = 5000
-        mi_null = np.zeros(n_permutations)
-        for i in range(n_permutations):
-            y_perm = np.random.permutation(y)
-            r_perm = np.corrcoef(x, y_perm)[0, 1]
-            mi_null[i] = -0.5 * np.log2(1 - r_perm**2)
-        
-        # More robust p-value calculation
-        p_value = (np.sum(mi_null >= mi) + 1) / (n_permutations + 1)
-        return mi, p_value
-    
-    def adaptive_binning_mi(self, x: np.ndarray, y: np.ndarray, 
-                          n_bins: int = None) -> Tuple[float, float]:
-        """
-        Estimate mutual information using adaptive binning.
-        More robust for small samples than fixed binning.
-        
-        Parameters:
-        -----------
-        x : np.ndarray
-            First variable
-        y : np.ndarray
-            Second variable
-        n_bins : int, optional
-            Number of bins. If None, uses sqrt(n_samples)
-            
-        Returns:
-        --------
-        mi : float
-            Estimated mutual information (in bits)
-        p_value : float
-            P-value from permutation test
-        """
-        if n_bins is None:
-            n_bins = int(np.sqrt(self.n_samples))
-            
-        # Adaptive binning based on data distribution
-        x_bins = np.percentile(x, np.linspace(0, 100, n_bins + 1))
-        y_bins = np.percentile(y, np.linspace(0, 100, n_bins + 1))
-        
-        # Calculate joint and marginal histograms
-        joint_hist, _, _ = np.histogram2d(x, y, bins=[x_bins, y_bins])
-        x_hist, _ = np.histogram(x, bins=x_bins)
-        y_hist, _ = np.histogram(y, bins=y_bins)
-        
-        # Normalize histograms to probabilities
-        joint_pdf = joint_hist / self.n_samples
-        x_pdf = x_hist / self.n_samples
-        y_pdf = y_hist / self.n_samples
-        
-        # Calculate MI (in bits using log2)
-        mi = 0
-        for i in range(n_bins):
-            for j in range(n_bins):
-                if joint_pdf[i,j] > 0:
-                    mi += joint_pdf[i,j] * np.log2(joint_pdf[i,j] / (x_pdf[i] * y_pdf[j]))
-        
-        # Permutation test
-        n_permutations = 5000
-        mi_null = np.zeros(n_permutations)
-        for i in range(n_permutations):
-            y_perm = np.random.permutation(y)
-            joint_hist_perm, _, _ = np.histogram2d(x, y_perm, bins=[x_bins, y_bins])
-            joint_pdf_perm = joint_hist_perm / self.n_samples
-            mi_perm = 0
-            for j in range(n_bins):
-                for k in range(n_bins):
-                    if joint_pdf_perm[j,k] > 0:
-                        mi_perm += joint_pdf_perm[j,k] * np.log2(joint_pdf_perm[j,k] / (x_pdf[j] * y_pdf[k]))
-            mi_null[i] = mi_perm
-        
-        # More robust p-value calculation
-        p_value = (np.sum(mi_null >= mi) + 1) / (n_permutations + 1)
-        return mi, p_value
+        # Check sample size
+        if self.n_samples < 100:
+            warnings.warn(
+                f"Sample size ({self.n_samples}) is small. "
+                "For reliable mutual information estimation, "
+                "it's recommended to have at least 100 samples."
+            )
     
     def shrinkage_mi(self, x: np.ndarray, y: np.ndarray, 
-                    alpha: float = 0.5) -> Tuple[float, float]:
+                    alpha: float = 0.5,
+                    bandwidth: float = 0.2) -> Tuple[float, float]:
         """
         Estimate mutual information using shrinkage estimation.
         Combines empirical estimates with structured target estimators.
@@ -142,30 +50,31 @@ class MutualInformationAnalyzer:
             Second variable
         alpha : float
             Shrinkage parameter (0 to 1)
+        bandwidth : float
+            Bandwidth for kernel density estimation
             
         Returns:
         --------
         mi : float
-            Estimated mutual information (in bits)
+            Estimated mutual information
         p_value : float
             P-value from permutation test
         """
         # Calculate empirical MI using k-NN
         k = max(3, int(np.sqrt(self.n_samples)))
-        kd_x = KernelDensity(bandwidth=0.2).fit(x.reshape(-1, 1))
-        kd_y = KernelDensity(bandwidth=0.2).fit(y.reshape(-1, 1))
-        kd_xy = KernelDensity(bandwidth=0.2).fit(np.column_stack([x, y]))
+        kd_x = KernelDensity(bandwidth=bandwidth).fit(x.reshape(-1, 1))
+        kd_y = KernelDensity(bandwidth=bandwidth).fit(y.reshape(-1, 1))
+        kd_xy = KernelDensity(bandwidth=bandwidth).fit(np.column_stack([x, y]))
         
         log_px = kd_x.score_samples(x.reshape(-1, 1))
         log_py = kd_y.score_samples(y.reshape(-1, 1))
         log_pxy = kd_xy.score_samples(np.column_stack([x, y]))
         
-        # Convert from natural log to log2 (bits)
-        mi_empirical = np.mean(log_pxy - log_px - log_py) / np.log(2)
+        mi_empirical = np.mean(log_pxy - log_px - log_py)
         
-        # Calculate Gaussian MI (in bits)
+        # Calculate Gaussian MI
         r = np.corrcoef(x, y)[0, 1]
-        mi_gaussian = -0.5 * np.log2(1 - r**2)
+        mi_gaussian = -0.5 * np.log(1 - r**2)
         
         # Combine estimates
         mi = alpha * mi_empirical + (1 - alpha) * mi_gaussian
@@ -176,229 +85,21 @@ class MutualInformationAnalyzer:
         for i in range(n_permutations):
             y_perm = np.random.permutation(y)
             r_perm = np.corrcoef(x, y_perm)[0, 1]
-            mi_null[i] = -0.5 * np.log2(1 - r_perm**2)
+            mi_null[i] = -0.5 * np.log(1 - r_perm**2)
         
-        # More robust p-value calculation
-        p_value = (np.sum(mi_null >= mi) + 1) / (n_permutations + 1)
+        p_value = np.mean(mi_null >= mi)
         return mi, p_value
     
-    def conditional_mi(self, x: np.ndarray, y: np.ndarray, z: np.ndarray) -> Tuple[float, float]:
-        """
-        Calculate conditional mutual information I(X;Y|Z).
-        
-        Parameters:
-        -----------
-        x : np.ndarray
-            First variable (alpha_s1)
-        y : np.ndarray
-            Second variable (alpha_s2)
-        z : np.ndarray
-            Conditioning variable (threshold or NDT)
-            
-        Returns:
-        --------
-        cmi : float
-            Conditional mutual information (in bits)
-        p_value : float
-            P-value from permutation test
-        """
-        # Fit KDE for all variables
-        kd_x = KernelDensity(bandwidth=0.2).fit(x.reshape(-1, 1))
-        kd_y = KernelDensity(bandwidth=0.2).fit(y.reshape(-1, 1))
-        kd_z = KernelDensity(bandwidth=0.2).fit(z.reshape(-1, 1))
-        kd_xz = KernelDensity(bandwidth=0.2).fit(np.column_stack([x, z]))
-        kd_yz = KernelDensity(bandwidth=0.2).fit(np.column_stack([y, z]))
-        kd_xyz = KernelDensity(bandwidth=0.2).fit(np.column_stack([x, y, z]))
-        
-        # Calculate log probabilities
-        log_px = kd_x.score_samples(x.reshape(-1, 1))
-        log_py = kd_y.score_samples(y.reshape(-1, 1))
-        log_pz = kd_z.score_samples(z.reshape(-1, 1))
-        log_pxz = kd_xz.score_samples(np.column_stack([x, z]))
-        log_pyz = kd_yz.score_samples(np.column_stack([y, z]))
-        log_pxyz = kd_xyz.score_samples(np.column_stack([x, y, z]))
-        
-        # Calculate conditional mutual information (convert to bits by dividing by log(2))
-        cmi = np.mean(log_pxyz + log_pz - log_pxz - log_pyz) / np.log(2)
-        
-        # Permutation test
-        n_permutations = 5000
-        cmi_null = np.zeros(n_permutations)
-        for i in range(n_permutations):
-            y_perm = np.random.permutation(y)
-            kd_xyz_perm = KernelDensity(bandwidth=0.2).fit(np.column_stack([x, y_perm, z]))
-            log_pxyz_perm = kd_xyz_perm.score_samples(np.column_stack([x, y_perm, z]))
-            cmi_null[i] = np.mean(log_pxyz_perm + log_pz - log_pxz - log_pyz) / np.log(2)
-        
-        # More robust p-value calculation
-        p_value = (np.sum(cmi_null >= cmi) + 1) / (n_permutations + 1)
-        return cmi, p_value
-    
-    def conditional_mi_all(self, x: np.ndarray, y: np.ndarray, 
-                          controls: Dict[str, np.ndarray]) -> Tuple[float, float]:
-        """
-        Calculate conditional mutual information when controlling for all variables simultaneously.
-        
-        Parameters:
-        -----------
-        x : np.ndarray
-            First variable (alpha_s1)
-        y : np.ndarray
-            Second variable (alpha_s2)
-        controls : Dict[str, np.ndarray]
-            Dictionary of control variables
-            
-        Returns:
-        --------
-        cmi : float
-            Conditional mutual information (in bits)
-        p_value : float
-            P-value from permutation test
-        """
-        # Stack all control variables
-        z_names = list(controls.keys())
-        z_values = np.column_stack([controls[name] for name in z_names])
-        
-        # Print diagnostic information
-        print(f"\nDiagnostic Information for Conditional MI (All Parameters):")
-        print(f"Number of control variables: {len(z_names)}")
-        print(f"Control variables: {z_names}")
-        print(f"Sample size: {len(x)}")
-        print(f"Dimensionality of control matrix: {z_values.shape}")
-        
-        # Correlations between control variables
-        print("\nCorrelations between control variables:")
-        for i in range(len(z_names)):
-            for j in range(i+1, len(z_names)):
-                corr = np.corrcoef(z_values[:,i], z_values[:,j])[0,1]
-                print(f"{z_names[i]} - {z_names[j]}: r = {corr:.4f}")
-        
-        # Fit KDE for all variables
-        bandwidth = min(0.2, 0.5 * np.power(self.n_samples, -1.0/(z_values.shape[1] + 4)))
-        print(f"Using bandwidth: {bandwidth:.4f}")
-        
-        kd_x = KernelDensity(bandwidth=bandwidth).fit(x.reshape(-1, 1))
-        kd_y = KernelDensity(bandwidth=bandwidth).fit(y.reshape(-1, 1))
-        kd_z = KernelDensity(bandwidth=bandwidth).fit(z_values)
-        kd_xz = KernelDensity(bandwidth=bandwidth).fit(np.column_stack([x, z_values]))
-        kd_yz = KernelDensity(bandwidth=bandwidth).fit(np.column_stack([y, z_values]))
-        kd_xyz = KernelDensity(bandwidth=bandwidth).fit(np.column_stack([x, y, z_values]))
-        
-        # Calculate log probabilities
-        log_px = kd_x.score_samples(x.reshape(-1, 1))
-        log_py = kd_y.score_samples(y.reshape(-1, 1))
-        log_pz = kd_z.score_samples(z_values)
-        log_pxz = kd_xz.score_samples(np.column_stack([x, z_values]))
-        log_pyz = kd_yz.score_samples(np.column_stack([y, z_values]))
-        log_pxyz = kd_xyz.score_samples(np.column_stack([x, y, z_values]))
-        
-        # Print summary statistics of log probabilities
-        print("\nSummary statistics of log probabilities:")
-        print(f"log_px: mean = {np.mean(log_px):.4f}, std = {np.std(log_px):.4f}")
-        print(f"log_py: mean = {np.mean(log_py):.4f}, std = {np.std(log_py):.4f}")
-        print(f"log_pz: mean = {np.mean(log_pz):.4f}, std = {np.std(log_pz):.4f}")
-        print(f"log_pxz: mean = {np.mean(log_pxz):.4f}, std = {np.std(log_pxz):.4f}")
-        print(f"log_pyz: mean = {np.mean(log_pyz):.4f}, std = {np.std(log_pyz):.4f}")
-        print(f"log_pxyz: mean = {np.mean(log_pxyz):.4f}, std = {np.std(log_pxyz):.4f}")
-        
-        # Calculate conditional mutual information (convert to bits by dividing by log(2))
-        cmi = np.mean(log_pxyz + log_pz - log_pxz - log_pyz) / np.log(2)
-        
-        # Print intermediate calculation steps
-        print(f"\nIntermediate calculation steps:")
-        print(f"Mean(log_pxyz + log_pz): {np.mean(log_pxyz + log_pz):.4f}")
-        print(f"Mean(log_pxz + log_pyz): {np.mean(log_pxz + log_pyz):.4f}")
-        print(f"Final CMI: {cmi:.4f} bits")
-        
-        # Calculate the components that contribute to CMI
-        print("\nComponents contributing to CMI:")
-        term1 = np.mean(log_pxyz)
-        term2 = np.mean(log_pz)
-        term3 = np.mean(log_pxz)
-        term4 = np.mean(log_pyz)
-        print(f"Mean(log_pxyz): {term1:.4f}")
-        print(f"Mean(log_pz): {term2:.4f}")
-        print(f"Mean(log_pxz): {term3:.4f}")
-        print(f"Mean(log_pyz): {term4:.4f}")
-        print(f"CMI = ({term1:.4f} + {term2:.4f} - {term3:.4f} - {term4:.4f}) / ln(2) = {cmi:.4f} bits")
-        
-        # Permutation test
-        n_permutations = 5000
-        cmi_null = np.zeros(n_permutations)
-        for i in range(n_permutations):
-            y_perm = np.random.permutation(y)
-            kd_xyz_perm = KernelDensity(bandwidth=bandwidth).fit(np.column_stack([x, y_perm, z_values]))
-            log_pxyz_perm = kd_xyz_perm.score_samples(np.column_stack([x, y_perm, z_values]))
-            cmi_null[i] = np.mean(log_pxyz_perm + log_pz - log_pxz - log_pyz) / np.log(2)
-        
-        # More robust p-value calculation
-        p_value = (np.sum(cmi_null >= cmi) + 1) / (n_permutations + 1)
-        print(f"Permutation test p-value: {p_value:.4f}")
-        
-        return cmi, p_value
-
-    def bootstrap_mi_ci(self, x: np.ndarray, y: np.ndarray, 
-                      method: str = 'gaussian_mi', 
-                      n_bootstrap: int = 1000, 
-                      alpha: float = 0.05) -> Tuple[float, float]:
-        """
-        Calculate bootstrap confidence intervals for mutual information estimates.
-        
-        Parameters:
-        -----------
-        x : np.ndarray
-            First variable
-        y : np.ndarray
-            Second variable
-        method : str
-            MI calculation method ('gaussian_mi', 'adaptive_binning_mi', or 'shrinkage_mi')
-        n_bootstrap : int
-            Number of bootstrap samples
-        alpha : float
-            Significance level for confidence intervals (default: 0.05 for 95% CI)
-            
-        Returns:
-        --------
-        lower_ci : float
-            Lower bound of confidence interval
-        upper_ci : float
-            Upper bound of confidence interval
-        """
-        # Select the MI calculation method
-        if method == 'gaussian_mi':
-            mi_func = lambda a, b: self.gaussian_mi(a, b)[0]
-        elif method == 'adaptive_binning_mi':
-            mi_func = lambda a, b: self.adaptive_binning_mi(a, b)[0]
-        elif method == 'shrinkage_mi':
-            mi_func = lambda a, b: self.shrinkage_mi(a, b)[0]
-        else:
-            raise ValueError(f"Unknown MI method: {method}")
-        
-        # Perform bootstrap resampling
-        mi_bootstrap = np.zeros(n_bootstrap)
-        for i in range(n_bootstrap):
-            # Sample with replacement
-            indices = np.random.randint(0, len(x), len(x))
-            x_sample = x[indices]
-            y_sample = y[indices]
-            
-            # Calculate MI for this bootstrap sample
-            mi_bootstrap[i] = mi_func(x_sample, y_sample)
-        
-        # Calculate confidence intervals
-        lower_ci = np.percentile(mi_bootstrap, 100 * alpha / 2)
-        upper_ci = np.percentile(mi_bootstrap, 100 * (1 - alpha / 2))
-        
-        return lower_ci, upper_ci
-
     def analyze_alpha_reliability(self, 
-                                feature: str = 'alpha_s1',
-                                target: str = 'alpha_s2',
-                                control_vars: List[str] = None,
-                                primary_method: str = 'adaptive_binning_mi',
-                                calculate_bootstrap_ci: bool = False) -> Dict:
+                                feature='alpha_s1',
+                                target='alpha_s2',
+                                control_vars=None,
+                                n_permutations=5000,
+                                alpha=0.5,
+                                bandwidth=0.2):
         """
-        Comprehensive analysis of alpha parameter reliability using multiple MI methods.
+        Analyze alpha parameter reliability using mutual information.
+        Calculates conditional MI separately for threshold and non-decision time parameters.
         
         Parameters:
         -----------
@@ -406,17 +107,19 @@ class MutualInformationAnalyzer:
             Column name for alpha from session 1
         target : str
             Column name for alpha from session 2
-        control_vars : List[str]
+        control_vars : list
             Variables to control for in the analysis
-        primary_method : str
-            The primary MI method to use for retention calculations ('gaussian_mi', 'adaptive_binning_mi', 'shrinkage_mi')
-        calculate_bootstrap_ci : bool
-            Whether to calculate bootstrap confidence intervals (computationally intensive)
+        n_permutations : int
+            Number of permutations for significance testing
+        alpha : float
+            Shrinkage parameter (0 to 1)
+        bandwidth : float
+            Bandwidth for kernel density estimation
             
         Returns:
         --------
-        results : Dict
-            Dictionary containing results from all MI estimation methods
+        dict
+            Dictionary containing results from MI estimation
         """
         results = {}
         
@@ -424,235 +127,390 @@ class MutualInformationAnalyzer:
         x = self.data[feature].values
         y = self.data[target].values
         
-        # Calculate raw MI using different methods
-        results['gaussian_mi'] = self.gaussian_mi(x, y)
-        results['adaptive_binning_mi'] = self.adaptive_binning_mi(x, y)
-        results['shrinkage_mi'] = self.shrinkage_mi(x, y)
-        
-        # Store the primary method for reference
-        results['primary_method'] = primary_method
-        
-        # Calculate bootstrap confidence intervals if requested
-        if calculate_bootstrap_ci:
-            results['bootstrap_ci'] = {}
-            print("\nCalculating bootstrap confidence intervals (this may take a while)...")
-            for method in ['gaussian_mi', 'adaptive_binning_mi', 'shrinkage_mi']:
-                lower_ci, upper_ci = self.bootstrap_mi_ci(x, y, method=method)
-                results['bootstrap_ci'][method] = (lower_ci, upper_ci)
-                print(f"{method.replace('_mi', '').title()} MI: 95% CI [{lower_ci:.4f}, {upper_ci:.4f}] bits")
+        # Calculate raw MI
+        mi, p_value = self.shrinkage_mi(x, y, alpha=alpha, bandwidth=bandwidth)
+        results['mi'] = (mi, p_value)
         
         # Calculate conditional MI if control variables are provided
         if control_vars:
             results['conditional_mi'] = {}
-            for var in control_vars:
-                z = self.data[var].values
-                results['conditional_mi'][var] = self.conditional_mi(x, y, z)
+            results['stepwise_retention'] = {}
             
-            # Calculate retention percentage for individual variables using the selected primary method
-            raw_mi = results[primary_method][0]
-            cmi_values = [v[0] for v in results['conditional_mi'].values()]
+            # Separate threshold and non-decision time parameters
+            threshold_vars = [var for var in control_vars if 'a_' in var]
+            ndt_vars = [var for var in control_vars if 'ndt_' in var]
+            
+            # Calculate conditional MI for threshold parameters
+            if threshold_vars:
+                # Extract threshold control variables
+                z_threshold = np.column_stack([self.data[v].values for v in threshold_vars])
+                
+                # Conditional MI approach: I(X;Y|Z) = I(X;Y,Z) - I(X;Z)
+                # First, calculate MI between X and Z
+                mi_xz_threshold, _ = self.shrinkage_mi(x, z_threshold[:,0], alpha=alpha, bandwidth=bandwidth)
+                
+                # For multi-dimensional Z, add each dimension's contribution
+                for i in range(1, z_threshold.shape[1]):
+                    mi_xz_i, _ = self.shrinkage_mi(x, z_threshold[:,i], alpha=alpha, bandwidth=bandwidth)
+                    mi_xz_threshold += mi_xz_i
+                
+                # Calculate a combined Gaussian MI for X and Y given Z
+                combined_mi = 0
+                for i in range(len(x)):
+                    # For each sample, calculate MI between X and Y conditioned on Z
+                    x_i = np.array([x[i]])
+                    y_i = np.array([y[i]])
+                    z_i = z_threshold[i,:]
+                    mi_xy_i, _ = self.shrinkage_mi(x_i, y_i, alpha=alpha, bandwidth=bandwidth)
+                    combined_mi += mi_xy_i
+                
+                # Average over all samples
+                mi_xyz_threshold = combined_mi / len(x)
+                
+                # Conditional MI is the difference
+                cmi_threshold = mi - mi_xz_threshold
+                
+                # Permutation test for threshold conditional MI
+                cmi_null = np.zeros(n_permutations)
+                for i in range(n_permutations):
+                    y_perm = np.random.permutation(y)
+                    # Calculate MI between X and permuted Y
+                    mi_xy_perm, _ = self.shrinkage_mi(x, y_perm, alpha=alpha, bandwidth=bandwidth)
+                    # Calculate conditional MI with permuted Y
+                    cmi_null[i] = mi_xy_perm - mi_xz_threshold
+                
+                p_value_threshold = (np.sum(cmi_null >= cmi_threshold) + 1) / (n_permutations + 1)
+                results['conditional_mi']['threshold'] = (cmi_threshold, p_value_threshold)
+                results['stepwise_retention']['threshold'] = (cmi_threshold / mi) * 100
+            
+            # Calculate conditional MI for non-decision time parameters
+            if ndt_vars:
+                # Extract non-decision time control variables
+                z_ndt = np.column_stack([self.data[v].values for v in ndt_vars])
+                
+                # Conditional MI approach: I(X;Y|Z) = I(X;Y,Z) - I(X;Z)
+                # First, calculate MI between X and Z
+                mi_xz_ndt, _ = self.shrinkage_mi(x, z_ndt[:,0], alpha=alpha, bandwidth=bandwidth)
+                
+                # For multi-dimensional Z, add each dimension's contribution
+                for i in range(1, z_ndt.shape[1]):
+                    mi_xz_i, _ = self.shrinkage_mi(x, z_ndt[:,i], alpha=alpha, bandwidth=bandwidth)
+                    mi_xz_ndt += mi_xz_i
+                
+                # Calculate a combined Gaussian MI for X and Y given Z
+                combined_mi = 0
+                for i in range(len(x)):
+                    # For each sample, calculate MI between X and Y conditioned on Z
+                    x_i = np.array([x[i]])
+                    y_i = np.array([y[i]])
+                    z_i = z_ndt[i,:]
+                    mi_xy_i, _ = self.shrinkage_mi(x_i, y_i, alpha=alpha, bandwidth=bandwidth)
+                    combined_mi += mi_xy_i
+                
+                # Average over all samples
+                mi_xyz_ndt = combined_mi / len(x)
+                
+                # Conditional MI is the difference
+                cmi_ndt = mi - mi_xz_ndt
+                
+                # Permutation test for NDT conditional MI
+                cmi_null = np.zeros(n_permutations)
+                for i in range(n_permutations):
+                    y_perm = np.random.permutation(y)
+                    # Calculate MI between X and permuted Y
+                    mi_xy_perm, _ = self.shrinkage_mi(x, y_perm, alpha=alpha, bandwidth=bandwidth)
+                    # Calculate conditional MI with permuted Y
+                    cmi_null[i] = mi_xy_perm - mi_xz_ndt
+                
+                p_value_ndt = (np.sum(cmi_null >= cmi_ndt) + 1) / (n_permutations + 1)
+                results['conditional_mi']['ndt'] = (cmi_ndt, p_value_ndt)
+                results['stepwise_retention']['ndt'] = (cmi_ndt / mi) * 100
+            
+            # Calculate retention percentages
             results['retention'] = {
-                var: (cmi / raw_mi) * 100 
-                for var, cmi in zip(control_vars, cmi_values)
+                'threshold': results['stepwise_retention'].get('threshold', 0),
+                'ndt': results['stepwise_retention'].get('ndt', 0)
             }
             
-            # Calculate conditional MI controlling for all variables simultaneously
-            control_dict = {var: self.data[var].values for var in control_vars}
-            results['cond_mi_all'], results['p_value_all'] = self.conditional_mi_all(x, y, control_dict)
+            # Add dimensionality information
+            results['dimensionality'] = {
+                'n_samples': self.n_samples,
+                'n_threshold_vars': len(threshold_vars),
+                'n_ndt_vars': len(ndt_vars),
+                'total_dimensions': {
+                    'threshold': 2 + len(threshold_vars),
+                    'ndt': 2 + len(ndt_vars)
+                }
+            }
             
-            # Calculate overall retention percentage using the selected primary method
-            results['retention_all'] = (results['cond_mi_all'] / raw_mi) * 100
+            # Add warnings for small sample sizes
+            if self.n_samples < 100:
+                warnings.warn(
+                    f"Sample size ({self.n_samples}) is small. "
+                    "Results should be interpreted with caution."
+                )
             
-            # Check for KDE dimensionality issues by comparing joint and individual controls
-            self._check_kde_consistency(results, control_vars, raw_mi)
+            # Add warning if dimensionality might be too high
+            for var_type, dim in results['dimensionality']['total_dimensions'].items():
+                if self.n_samples < dim * 10:
+                    warnings.warn(
+                        f"Sample size ({self.n_samples}) might be too small for "
+                        f"{var_type} analysis with {dim} dimensions. "
+                        "Consider reducing the number of control variables."
+                    )
         
         return results
     
-    def _check_kde_consistency(self, results: Dict, control_vars: List[str], raw_mi: float) -> None:
+    def bandwidth_sensitivity_analysis(self, x: np.ndarray, y: np.ndarray,
+                                    bandwidths: List[float] = None,
+                                    alpha: float = 0.5) -> Dict:
         """
-        Check for potential high-dimensional KDE issues by comparing joint and individual control results.
+        Perform sensitivity analysis for different bandwidths.
         
         Parameters:
         -----------
-        results : Dict
-            Results dictionary from analyze_alpha_reliability
-        control_vars : List[str]
-            List of control variables
-        raw_mi : float
-            Raw mutual information value
+        x : np.ndarray
+            First variable
+        y : np.ndarray
+            Second variable
+        bandwidths : List[float], optional
+            List of bandwidths to test. If None, uses default range.
+        alpha : float
+            Shrinkage parameter (0 to 1)
+            
+        Returns:
+        --------
+        Dict
+            Dictionary containing results for each bandwidth
         """
-        # Get the minimum retention from individual controls
-        min_individual_retention = min(results['retention'].values())
-        joint_retention = results['retention_all']
+        if bandwidths is None:
+            # Default bandwidth range based on Silverman's rule
+            base_bandwidth = np.std(x) * (4/(3*len(x)))**(1/5)
+            bandwidths = [
+                base_bandwidth * 0.5,
+                base_bandwidth * 0.75,
+                base_bandwidth,
+                base_bandwidth * 1.25,
+                base_bandwidth * 1.5,
+                base_bandwidth * 2,
+                base_bandwidth * 3,
+              
+            ]
         
-        # Compare joint vs individual - if joint is much lower, it might indicate KDE issues
-        retention_ratio = joint_retention / min_individual_retention if min_individual_retention > 0 else float('inf')
+        results = {
+            'bandwidths': bandwidths,
+            'mi_values': [],
+            'p_values': [],
+            'empirical_mi': [],
+            'gaussian_mi': []
+        }
         
-        print("\nKDE Dimensionality Consistency Check:")
-        print(f"Minimum retention from individual controls: {min_individual_retention:.2f}%")
-        print(f"Joint retention (all controls): {joint_retention:.2f}%")
-        print(f"Ratio (joint/min individual): {retention_ratio:.2f}")
+        for h in bandwidths:
+            # Calculate MI with current bandwidth
+            mi, p_value = self.shrinkage_mi(x, y, alpha=alpha, bandwidth=h)
+            
+            # Calculate individual components for analysis
+            kd_x = KernelDensity(bandwidth=h).fit(x.reshape(-1, 1))
+            kd_y = KernelDensity(bandwidth=h).fit(y.reshape(-1, 1))
+            kd_xy = KernelDensity(bandwidth=h).fit(np.column_stack([x, y]))
+            
+            log_px = kd_x.score_samples(x.reshape(-1, 1))
+            log_py = kd_y.score_samples(y.reshape(-1, 1))
+            log_pxy = kd_xy.score_samples(np.column_stack([x, y]))
+            
+            mi_empirical = np.mean(log_pxy - log_px - log_py)
+            r = np.corrcoef(x, y)[0, 1]
+            mi_gaussian = -0.5 * np.log(1 - r**2)
+            
+            results['mi_values'].append(mi)
+            results['p_values'].append(p_value)
+            results['empirical_mi'].append(mi_empirical)
+            results['gaussian_mi'].append(mi_gaussian)
         
-        if retention_ratio < 0.5 and len(control_vars) > 2:
-            print("\nWARNING: Joint CMI shows much lower retention than individual controls.")
-            print("This might indicate high-dimensional KDE estimation issues.")
-            print("Consider interpretation with caution due to the curse of dimensionality.")
-            print("Recommendation: If sample size is small relative to the number of control variables,")
-            print("consider alternative approaches like stepwise conditioning or regression-based methods.")
-        else:
-            print("\nNo major inconsistency detected between joint and individual CMI estimates.")
+        # Calculate stability metrics
+        results['stability'] = {
+            'mi_std': np.std(results['mi_values']),
+            'mi_range': np.max(results['mi_values']) - np.min(results['mi_values']),
+            'mi_cv': np.std(results['mi_values']) / np.mean(results['mi_values'])
+        }
+        
+        return results
     
-    def plot_results(self, results: Dict, feature: str = 'alpha_s1', 
-                    target: str = 'alpha_s2') -> None:
+    def plot_bandwidth_sensitivity(self, sensitivity_results: Dict):
         """
-        Create visualizations of the MI analysis results.
+        Plot results from bandwidth sensitivity analysis.
+        
+        Parameters:
+        -----------
+        sensitivity_results : Dict
+            Results from bandwidth_sensitivity_analysis
+        """
+        plt.figure(figsize=(12, 6))
+        
+        # Plot MI values
+        plt.subplot(1, 2, 1)
+        plt.plot(sensitivity_results['bandwidths'], sensitivity_results['mi_values'], 
+                'o-', label='Combined MI')
+        plt.plot(sensitivity_results['bandwidths'], sensitivity_results['empirical_mi'], 
+                '--', label='Empirical MI')
+        plt.plot(sensitivity_results['bandwidths'], sensitivity_results['gaussian_mi'], 
+                '--', label='Gaussian MI')
+        plt.xlabel('Bandwidth')
+        plt.ylabel('Mutual Information (bits)')
+        plt.title('MI vs Bandwidth')
+        plt.legend()
+        
+        # Plot p-values
+        plt.subplot(1, 2, 2)
+        plt.plot(sensitivity_results['bandwidths'], sensitivity_results['p_values'], 'o-')
+        plt.xlabel('Bandwidth')
+        plt.ylabel('P-value')
+        plt.title('P-value vs Bandwidth')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print stability metrics
+        print("\nStability Metrics:")
+        print(f"Standard Deviation: {sensitivity_results['stability']['mi_std']:.4f}")
+        print(f"Range: {sensitivity_results['stability']['mi_range']:.4f}")
+        print(f"Coefficient of Variation: {sensitivity_results['stability']['mi_cv']:.4f}")
+    
+    def plot_results(self, results: Dict, dataset_name: str = None):
+        """
+        Plot results from mutual information analysis.
         
         Parameters:
         -----------
         results : Dict
             Results from analyze_alpha_reliability
-        feature : str
-            Column name for alpha from session 1
-        target : str
-            Column name for alpha from session 2
+        dataset_name : str, optional
+            Name of the dataset for plot title
         """
-        # Plot 1: Scatter plot and MI estimates
-        plt.figure(figsize=(12, 5))
+        # Create figure
+        plt.figure(figsize=(12, 8))
         
-        # Plot 1: Scatter plot with correlation
-        plt.subplot(1, 2, 1)
-        sns.scatterplot(data=self.data, x=feature, y=target, alpha=0.6)
-        plt.title(f'Alpha Parameters Across Sessions (n={self.n_samples})')
+        # Add title with dataset name if provided
+        if dataset_name:
+            plt.suptitle(f"Mutual Information Analysis: {dataset_name}", fontsize=16)
         
-        # Plot 2: MI estimates comparison
-        plt.subplot(1, 2, 2)
-        mi_values = [results['gaussian_mi'][0], 
-                    results['adaptive_binning_mi'][0],
-                    results['shrinkage_mi'][0]]
-        mi_labels = ['Gaussian MI', 'Adaptive Binning MI', 'Shrinkage MI']
+        # Plot raw MI and conditional MI for threshold and NDT
+        mi_values = [results['mi'][0]]
+        mi_labels = ['Raw MI']
+        p_values = [results['mi'][1]]
         
-        # Add p-values in the labels
-        p_values = [results['gaussian_mi'][1], 
-                   results['adaptive_binning_mi'][1],
-                   results['shrinkage_mi'][1]]
+        if 'conditional_mi' in results:
+            for label, (cmi, p_value) in results['conditional_mi'].items():
+                mi_values.append(cmi)
+                mi_labels.append(f"CMI ({label})")
+                p_values.append(p_value)
         
-        mi_labels = [f"{label}\n(p={p:.4f})" for label, p in zip(mi_labels, p_values)]
+        # Add significance asterisks
+        for i, p in enumerate(p_values):
+            if p < 0.001:
+                mi_labels[i] += ' ***'
+            elif p < 0.01:
+                mi_labels[i] += ' **'
+            elif p < 0.05:
+                mi_labels[i] += ' *'
         
-        # Plot bars
-        bars = plt.bar(mi_labels, mi_values)
-        
-        # Add error bars for bootstrap CIs if available
-        if 'bootstrap_ci' in results:
-            # Create properly formatted yerr for matplotlib
-            yerr = np.zeros((2, len(mi_values)))
-            
-            for i, method in enumerate(['gaussian_mi', 'adaptive_binning_mi', 'shrinkage_mi']):
-                mi_value = mi_values[i]
-                lower_ci, upper_ci = results['bootstrap_ci'][method]
-                yerr[0, i] = mi_value - lower_ci  # lower error
-                yerr[1, i] = upper_ci - mi_value  # upper error
-            
-            # Add error bars
-            x_positions = range(len(mi_labels))
-            plt.errorbar(x_positions, mi_values, yerr=yerr, fmt='none', color='black', capsize=5)
-            
-            # Update the title if bootstrap CIs are shown
-            plt.title(f'Mutual Information Estimates with 95% CIs (n={self.n_samples})')
-        else:
-            plt.title(f'Mutual Information Estimates (n={self.n_samples})')
-            
+        # Plot MI values
+        plt.subplot(2, 1, 1)
+        bars = plt.bar(mi_labels, mi_values, color=['blue', 'green', 'orange'])
         plt.ylabel('Mutual Information (bits)')
-        plt.xticks(rotation=45)
+        plt.title('Mutual Information Estimates')
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        # Add value labels on bars
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                    f'{height:.3f}', ha='center', va='bottom')
+        
+        # Plot retention percentages if available
+        if 'retention' in results:
+            retention_values = list(results['retention'].values())
+            retention_labels = [f"{label}" for label in results['retention'].keys()]
+            
+            plt.subplot(2, 1, 2)
+            bars = plt.bar(retention_labels, retention_values, color=['green', 'orange'])
+            plt.ylabel('Retention (%)')
+            plt.title('Information Retention After Controlling for Parameters')
+            plt.ylim(0, 110)  # Cap at 110% to leave room for text
+            plt.grid(axis='y', linestyle='--', alpha=0.7)
+            
+            # Add value labels on bars
+            for bar in bars:
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height + 1,
+                        f'{height:.1f}%', ha='center', va='bottom')
         
         plt.tight_layout()
+        if dataset_name:
+            plt.subplots_adjust(top=0.9)  # Make room for suptitle
         plt.show()
         
-        # Check if we have conditional MI results
-        if 'retention_all' in results:
-            # Print the summary for clarity
-            print("\nMutual Information Summary (All Parameters):")
-            print(f"Primary Method: {results['primary_method']}")
-            primary_raw_mi = results[results['primary_method']][0]
-            print(f"Raw MI: {primary_raw_mi:.4f} bits (p={results[results['primary_method']][1]:.4f})")
-            print(f"Conditional MI (all parameters): {results['cond_mi_all']:.4f} bits (p={results['p_value_all']:.4f})")
-            print(f"Overall Retention: {results['retention_all']:.1f}%")
-            
-            primary_method_name = results['primary_method'].replace('_mi', '').title()
-            
-            # Create a pie chart showing the breakdown of information for the primary method
-            plt.figure(figsize=(8, 8))
-            labels = ['Unique to Alpha', 'Shared with\nThreshold & NDT']
-            retention = results['retention_all']
-            # Cap retention at 100% for visualization purposes
-            retention = min(retention, 100)
-            sizes = [retention, 100-retention]
-            colors = ['#2ca02c', '#ff7f0e']  # Green and orange
-            
-            plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', 
-                    startangle=90, textprops={'fontsize': 14})
-            plt.axis('equal')
-            plt.title(f'Breakdown of Alpha Reliability (n={self.n_samples})\n(Based on {primary_method_name} MI in bits)', fontsize=16)
-            plt.tight_layout()
-            plt.show()
-            
-            # Create separate pie charts for Adaptive Binning and Shrinkage MI if both are present
-            methods_to_plot = ['adaptive_binning_mi', 'shrinkage_mi']
-            if all(method in results for method in methods_to_plot) and 'retention_all' in results:
-                for method in methods_to_plot:
-                    if method != results['primary_method']:  # Skip if it's already the primary method
-                        method_raw_mi = results[method][0]
-                        method_retention = (results['cond_mi_all'] / method_raw_mi) * 100 if method_raw_mi > 0 else 0
-                        method_retention = min(method_retention, 100)
-                        
-                        method_name = method.replace('_mi', '').title()
-                        
-                        plt.figure(figsize=(8, 8))
-                        sizes = [method_retention, 100-method_retention]
-                        
-                        plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', 
-                                startangle=90, textprops={'fontsize': 14})
-                        plt.axis('equal')
-                        plt.title(f'Breakdown of Alpha Reliability (n={self.n_samples})\n(Based on {method_name} MI in bits)', fontsize=16)
-                        plt.tight_layout()
-                        plt.show()
-            
-            # Bar chart showing individual parameter contributions
-            if 'retention' in results:
-                plt.figure(figsize=(10, 6))
-                vars_list = list(results['retention'].keys())
-                retention_values = [results['retention'][var] for var in vars_list]
-                
-                # Get display names for variables
-                display_names = []
-                for var in vars_list:
-                    if 'a_mean' in var:
-                        display_names.append(f"Threshold ({var})")
-                    elif 'ndt' in var:
-                        display_names.append(f"Non-Decision Time ({var})")
-                    else:
-                        display_names.append(var)
-                
-                # Add the "all parameters" bar
-                display_names.append("All Parameters")
-                retention_values.append(results['retention_all'])
-                
-                # Create a bar chart with error bars
-                plt.figure(figsize=(12, 6))
-                bars = plt.bar(display_names, retention_values)
-                
-                # Color the "All Parameters" bar differently
-                bars[-1].set_color('darkred')
-                
-                plt.axhline(y=100, color='blue', linestyle='--', alpha=0.5, label='100% Retention')
-                plt.ylabel('Information Retention (%)', fontsize=12)
-                plt.title(f'Information Retention After Controlling for Parameters (n={self.n_samples})\n(Based on {primary_method_name} MI in bits)', fontsize=14)
-                plt.xticks(rotation=45, ha='right', fontsize=10)
-                plt.ylim(0, max(max(retention_values) * 1.1, 100))
-                plt.grid(axis='y', linestyle='--', alpha=0.3)
-                plt.tight_layout()
-                plt.show()
-            
-            
+        # Print summary table
+        self.print_summary_table(results, dataset_name)
+    
+    def print_summary_table(self, results: Dict, dataset_name: str = None):
+        """
+        Print a summary table of mutual information results.
+        
+        Parameters:
+        -----------
+        results : Dict
+            Results from analyze_alpha_reliability
+        dataset_name : str, optional
+            Name of the dataset for header
+        """
+        # Print header
+        print("\n" + "="*65)
+        if dataset_name:
+            print(f"MUTUAL INFORMATION ANALYSIS SUMMARY: {dataset_name}")
+        else:
+            print("MUTUAL INFORMATION ANALYSIS SUMMARY")
+        print("="*65)
+        
+        # Print dataset information
+        print(f"Number of participants: {self.n_samples}")
+        
+        if 'dimensionality' in results:
+            print(f"Threshold variables: {results['dimensionality']['n_threshold_vars']}")
+            print(f"Non-decision time variables: {results['dimensionality']['n_ndt_vars']}")
+        print("-"*65)
+        
+        # Print MI results table header
+        print(f"{'Type':<20} {'MI (bits)':<15} {'p-value':<15} {'Retention %':<15}")
+        print("-"*65)
+        
+        # Print raw MI
+        mi, p_value = results['mi']
+        sig = self._get_significance_stars(p_value)
+        print(f"{'Raw MI':<20} {mi:<15.3f} {p_value:<15.3f}{sig} {'N/A':<15}")
+        
+        # Print conditional MI results
+        if 'conditional_mi' in results:
+            for var_type, (cmi, p_value) in results['conditional_mi'].items():
+                retention = results['retention'][var_type]
+                sig = self._get_significance_stars(p_value)
+                print(f"{'CMI ('+ var_type + ')':<20} {cmi:<15.3f} {p_value:<15.3f}{sig} {retention:<15.1f}")
+        
+        print("="*65)
+        print("Significance: * p<0.05, ** p<0.01, *** p<0.001")
+        print("MI = Mutual Information, CMI = Conditional Mutual Information")
+        print("Retention % = Percentage of MI retained after controlling for variables")
+    
+    def _get_significance_stars(self, p_value):
+        """Helper method to get significance stars for p-values"""
+        if p_value < 0.001:
+            return " ***"
+        elif p_value < 0.01:
+            return " **"
+        elif p_value < 0.05:
+            return " *"
+        else:
+            return ""
 
 def load_and_merge(session1_path, session2_path):
     """
@@ -744,14 +602,19 @@ if __name__ == "__main__":
     results = analyzer.analyze_alpha_reliability(
         feature='alpha_s1',
         target='alpha_s2',
-        control_vars=control_vars
+        control_vars=control_vars,
+        alpha=0.5,
+        bandwidth=0.2
     )
     
-    # Plot results
-    analyzer.plot_results(results)
+    # Run bandwidth sensitivity analysis
+    sensitivity_results = analyzer.bandwidth_sensitivity_analysis(
+        x=analyzer.data['alpha_s1'].values,
+        y=analyzer.data['alpha_s2'].values
+    )
     
-    # Print results
-    print("\nMutual Information Estimates:")
-    print(f"Gaussian MI: {results['gaussian_mi'][0]:.4f} bits (p={results['gaussian_mi'][1]:.4f})")
-    print(f"Adaptive Binning MI: {results['adaptive_binning_mi'][0]:.4f} bits (p={results['adaptive_binning_mi'][1]:.4f})")
-    print(f"Shrinkage MI: {results['shrinkage_mi'][0]:.4f} bits (p={results['shrinkage_mi'][1]:.4f})")
+    # Plot bandwidth sensitivity
+    analyzer.plot_bandwidth_sensitivity(sensitivity_results)
+    
+    # Plot results
+    analyzer.plot_results(results, dataset_name="My Dataset")
