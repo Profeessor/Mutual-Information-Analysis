@@ -1,0 +1,21 @@
+,APT_Bet_session
+v1_mean,0.649
+v2_mean,0.705
+v3_mean,0.635
+v4_mean,0.6
+v_total = (v2 + v1)-(v3+v4),0.795
+v_bias = (v2 + v1)+ (v3+v4),0.269
+v_w_priming = (v2 - v1),0.182
+v_nw_priming = (v4 - v3),0.048
+zr_mean,0.446
+a_mean,0.822
+ndt1_mean,0.669
+ndt2_mean,0.595
+ndt3_mean,0.642
+ndt4_mean,0.544
+sndt_mean,0.541
+alpha_mean,0.623
+accuracy_percentage,0.85
+mean_log_rt,0.817
+alpha_mean_boxcox_after_arcsin,0.669
+accuracy_percentage_boxcox_after_arcsin,0.846
